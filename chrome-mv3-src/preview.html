@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>BuddyTrans UI Preview</title>
+    <link rel="stylesheet" href="../chrome-mv3/app.css" />
+    <style>
+      body { width: 360px; margin: 0; background: #F7F7F7; }
+      html.dark body { background: #0F0F0F; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      /* ---- chrome API stub（仅用于离线视觉预览） ---- */
+      const params = new URLSearchParams(location.search);
+      const settings = {
+        useFreeChannel: true,
+        freeEndpoint: 'https://relay.buddy-trans.example.com/v1',
+        freeModel: 'tencent/Hunyuan-MT-7B',
+        byok: { baseUrl: 'https://api.deepseek.com/v1', apiKey: '', model: 'deepseek-chat' },
+        local: { enabled: true, baseUrl: 'http://127.0.0.1:11434/v1', apiKey: '', model: 'qwen2.5:7b', batchSize: 6, timeoutMs: 120000, fallback: true },
+        autoFallbackByok: true,
+        displayMode: 'bilingual',
+        targetLang: '中文',
+        sourceLang: 'auto',
+        theme: params.get('theme') || 'light',
+        glossary: { 'LLM': '大模型' },
+        customPrompt: '',
+        useContext: false,
+        batchMaxTexts: 20,
+        rootMarginPx: 200,
+        siteRules: {}
+      };
+      window.chrome = {
+        runtime: {
+          getURL: (p) => '../chrome-mv3/' + p,
+          sendMessage: async (msg) => {
+            switch (msg.type) {
+              case 'GET_SETTINGS': return { settings };
+              case 'SET_THEME': settings.theme = msg.theme; return { settings };
+              case 'SET_DISPLAY_MODE': settings.displayMode = msg.mode; return { settings };
+              case 'SAVE_SETTINGS': return { settings };
+              case 'TRANSLATE_BATCH':
+                return { ok: true, results: [{ id: 'panel', text: '现代、干净、简约、圆润但不幼稚。\n留白充足、层级清晰，主操作唯一，深浅双色皆优雅。' }] };
+              case 'GET_HISTORY':
+                return { history: [
+                  { id: 'h1', src: 'Hello world, this is BuddyTrans speaking.', dst: '你好世界，译伴在此为你服务。', from: 'auto', to: '中文', ts: Date.now() - 5 * 60000 },
+                  { id: 'h2', src: 'Design is not just what it looks like. Design is how it works.', dst: '设计不止于外观，设计关乎其运作方式。', from: 'auto', to: '中文', ts: Date.now() - 3600000 },
+                  { id: 'h3', src: '少即是多。', dst: 'Less is more.', from: 'auto', to: 'English', ts: Date.now() - 86400000 }
+                ] };
+              case 'REMOVE_HISTORY': return { ok: true, history: [] };
+              case 'GET_LOGS': return { logs: [{ ts: Date.now(), level: 'info', type: 'provider', message: '请求 → [免费通道 tencent/Hunyuan-MT-7B] relay.example.com', detail: '' }] };
+              case 'TEST_PROVIDER': return { ok: true, ms: 236, model: 'qwen2.5:7b', sample: '你好，连接测试成功。' };
+              case 'LIST_MODELS': return { ok: true, models: ['qwen2.5:7b', 'qwen2.5:3b'] };
+              default: return { ok: true };
+            }
+          }
+        },
+        storage: { onChanged: { addListener() {}, removeListener() {} } },
+        permissions: { request: async () => true },
+        windows: { getCurrent: async () => ({ id: 1 }) },
+        sidePanel: { open: async () => ({}) }
+      };
+    </script>
+    <script src="../chrome-mv3/chunks/popup-app.js"></script>
+  </body>
+</html>

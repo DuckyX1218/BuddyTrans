@@ -1,0 +1,51 @@
+{
+  "manifest_version": 3,
+  "name": "译伴 BuddyTrans",
+  "description": "中英多语 AI 翻译：本地模型 / 免费通道 / BYOK 三通道，视口懒翻译 + 批量合并 + 侧边栏工作台",
+  "version": "0.2.0",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting",
+    "sidePanel"
+  ],
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
+  "action": {
+    "default_title": "译伴 BuddyTrans",
+    "default_popup": "popup.html"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "commands": {
+    "toggle-page-translate": {
+      "suggested_key": {
+        "default": "Alt+T"
+      },
+      "description": "开关整页翻译"
+    },
+    "cycle-display-mode": {
+      "suggested_key": {
+        "default": "Alt+M"
+      },
+      "description": "切换 双语/仅译文/仅原文"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "fonts/*.woff2"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ]
+}
