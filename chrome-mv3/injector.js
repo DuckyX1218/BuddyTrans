@@ -362,7 +362,7 @@ html[data-bt-mode="target"] .bt-tr { border-left: none; background: transparent;
 /* 翻译失败：内联单色错误行，点击重试 */
 .bt-error { color: inherit; cursor: pointer; border-left-color: rgba(128,128,128,.9); }
 .bt-error:hover { text-decoration: underline; }
-#bt-pill, #bt-bubble-host, #bt-notice-host { all: initial; }
+#bt-pill, #bt-bubble-host, #bt-notice-host, #bt-error-host { all: initial; }
 `;
 
 const SKIP_TAGS = new Set(['CODE','PRE','TEXTAREA','INPUT','SELECT','SCRIPT','STYLE','NOSCRIPT','IFRAME','SVG','CANVAS','AUDIO','VIDEO','BUTTON']);
@@ -477,6 +477,77 @@ function waitTimeoutMs() {
   return s?.local.enabled ? Math.max(60000, (s.local.timeoutMs || 120000) + 30000) : 120000;
 }
 
+/* ------------------------------ 批量失败：局部化错误提示（不污染正文） ------------------------------ */
+let failedBatches = [];
+let errorHost = null;
+
+function hideTranslateError() {
+  errorHost?.remove();
+  errorHost = null;
+}
+
+function failBatch(batch, err, freeDown) {
+  // 恢复原文外观：清除加载占位与 pending 状态，不往正文里插入错误文案
+  batch.forEach(item => item.els.forEach(el => {
+    clearPending(el);
+    state.slots.get(el)?.remove();
+    state.slots.delete(el);
+  }));
+  failedBatches.push(batch);
+  showTranslateError(err, freeDown);
+}
+
+function showTranslateError(err, freeDown) {
+  hideTranslateError();
+  const host = document.createElement('div');
+  host.id = 'bt-error-host';
+  const root = host.attachShadow({ mode: 'open' });
+  root.innerHTML = `
+    <style>
+      ${fontFaceCss()}
+      :host { all: initial; }
+      .bar {
+        position: fixed; bottom: 52px; left: 50%; transform: translateX(-50%);
+        z-index: 2147483647; display: flex; gap: 14px; align-items: center;
+        max-width: min(620px, calc(100vw - 24px));
+        background: #1A1A1A; color: #F5F5F5; border: 1px solid #2A2A2A;
+        padding: 10px 16px; border-radius: 12px;
+        font: 400 13px/1.5 ${FONT_STACK}; box-shadow: 0 4px 16px rgba(0,0,0,.24);
+        animation: bt-err-in .2s ease;
+      }
+      @keyframes bt-err-in { from { opacity: 0; transform: translate(-50%, 6px); } to { opacity: 1; transform: translate(-50%, 0); } }
+      .msg { min-width: 0; }
+      .msg b { font-weight: 600; }
+      .reason { display: block; margin-top: 2px; color: #A6A6A6; word-break: break-word; }
+      a { color: #F5F5F5; cursor: pointer; font-weight: 600; text-decoration: underline; text-underline-offset: 3px; white-space: nowrap; flex: none; }
+      a:focus-visible { outline: 2px solid #F5F5F5; outline-offset: 2px; }
+    </style>
+    <div class="bar" role="alert">
+      <div class="msg">
+        <b>翻译失败</b>（已恢复原文，页面其他内容不受影响）
+        <span class="reason"></span>
+      </div>
+      <a id="bt-err-retry" role="button" tabindex="0">重试</a>
+      ${freeDown ? '<a id="bt-err-config" role="button" tabindex="0">去配置 BYOK</a>' : ''}
+      <a id="bt-err-close" role="button" tabindex="0">关闭</a>
+    </div>`;
+  root.querySelector('.reason').textContent = err;
+  document.documentElement.append(host);
+  errorHost = host;
+  root.getElementById('bt-err-retry').addEventListener('click', () => {
+    const batches = failedBatches;
+    failedBatches = [];
+    hideTranslateError();
+    batches.forEach(b => b.forEach(item => item.els.forEach(el => {
+      if (!el.dataset.btDone) (item.plain ? enqueuePlain(el) : enqueueRich(el));
+    })));
+  });
+  const cfg = root.getElementById('bt-err-config');
+  if (cfg) cfg.addEventListener('click', () => chrome.runtime.sendMessage({ type: 'OPEN_OPTIONS' }));
+  root.getElementById('bt-err-close').addEventListener('click', hideTranslateError);
+  setTimeout(() => { if (errorHost === host) hideTranslateError(); }, 60000);
+}
+
 async function flushQueue() {
   state.flushTimer = 0;
   const limit = batchSize();
@@ -500,7 +571,7 @@ async function flushQueue() {
 
 async function requestBatch(batch) {
   const ctx = buildContext();
-  const failAll = (err) => batch.forEach(b => b.els.forEach(el => insertError(el, err)));
+  const failAll = (err, freeDown) => failBatch(batch, err, freeDown);
   let res;
   try {
     res = await Promise.race([
@@ -513,9 +584,8 @@ async function requestBatch(batch) {
     return;
   }
   if (!res?.ok) {
-    failAll(res?.error ?? '未知错误');
+    failAll(res?.error ?? '未知错误', res?.notice?.kind === 'free-down');
     logError('injector', `批量翻译失败（${batch.length} 条）`, res?.error);
-    if (res?.notice?.kind === 'free-down') showNotice(res.notice.message);
     return;
   }
   const map = new Map((res.results ?? []).map(r => [r.id, r.text]));
@@ -698,6 +768,8 @@ function checkSpa() {
   state.queue.clear();
   state.textIndex.clear();
   state.pendingInjections = [];
+  hideTranslateError();
+  failedBatches = [];
   document.querySelectorAll('.bt-tr').forEach(n => n.remove());
   document.querySelectorAll('[data-bt-done]').forEach(el => {
     delete el.dataset.btDone;
@@ -729,6 +801,8 @@ function stopTranslate(silent = false) {
   }
   state.queue.clear();
   state.textIndex.clear();
+  hideTranslateError();
+  failedBatches = [];
   if (!silent) showPill(cancelled ? `整页翻译已关闭（取消 ${cancelled} 段待翻译）` : '整页翻译已关闭');
   logInfo('injector', `整页翻译关闭${cancelled ? `，取消 ${cancelled} 段排队` : ''}`);
 }

@@ -11,7 +11,7 @@ const DEFAULT_SETTINGS = {
   useFreeChannel: true,
   freeEndpoint: 'https://relay.buddy-trans.example.com/v1',
   freeModel: FREE_MODELS[0],
-  byok: { baseUrl: 'https://api.deepseek.com/v1', apiKey: '', model: 'deepseek-chat' },
+  byok: { baseUrl: 'https://api.siliconflow.cn/v1', apiKey: '', model: 'Qwen/Qwen2.5-7B-Instruct', models: [] },
   local: { enabled: false, baseUrl: 'http://127.0.0.1:11434/v1', apiKey: '', model: 'qwen2.5:7b', batchSize: 6, timeoutMs: 120000, fallback: true },
   autoFallbackByok: true,
   displayMode: 'bilingual',
@@ -30,15 +30,20 @@ const SETTINGS_KEY = 'bt-settings';
 
 async function getSettings() {
   const raw = (await chrome.storage.local.get(SETTINGS_KEY))[SETTINGS_KEY];
-  if (!raw) return { ...DEFAULT_SETTINGS };
-  return {
-    ...DEFAULT_SETTINGS,
-    ...raw,
-    byok: { ...DEFAULT_SETTINGS.byok, ...(raw.byok ?? {}) },
-    local: { ...DEFAULT_SETTINGS.local, ...(raw.local ?? {}) },
-    glossary: { ...(raw.glossary ?? {}) },
-    siteRules: { ...(raw.siteRules ?? {}) }
-  };
+  const merged = raw
+    ? {
+        ...DEFAULT_SETTINGS,
+        ...raw,
+        byok: { ...DEFAULT_SETTINGS.byok, ...(raw.byok ?? {}), models: Array.isArray(raw.byok?.models) ? raw.byok.models.filter(Boolean) : [] },
+        local: { ...DEFAULT_SETTINGS.local, ...(raw.local ?? {}) },
+        glossary: { ...(raw.glossary ?? {}) },
+        siteRules: { ...(raw.siteRules ?? {}) }
+      }
+    : { ...DEFAULT_SETTINGS, byok: { ...DEFAULT_SETTINGS.byok } };
+  // 旧版本默认端点/模型（DeepSeek）一次性迁移到硅基流动国内站；用户自定义过的值不受影响
+  if (merged.byok.baseUrl === 'https://api.deepseek.com/v1') merged.byok.baseUrl = DEFAULT_SETTINGS.byok.baseUrl;
+  if (merged.byok.model === 'deepseek-chat') merged.byok.model = DEFAULT_SETTINGS.byok.model;
+  return merged;
 }
 
 async function saveSettings(patch) {
@@ -256,6 +261,11 @@ async function callProvider(provider, systemPrompt, userPayload, signal) {
 
 function localReady(l) { return l.enabled && !!l.baseUrl.trim() && !!l.model.trim(); }
 
+function byokModels(settings) {
+  const list = Array.isArray(settings.byok?.models) ? settings.byok.models.filter(Boolean) : [];
+  return list.length ? list : (settings.byok?.model ? [settings.byok.model] : []);
+}
+
 function buildChannels(settings) {
   const list = [];
   const l = settings.local;
@@ -270,7 +280,8 @@ function buildChannels(settings) {
     for (const m of models) list.push({ channel: 'free', label: `免费通道 ${m}`, endpoint: settings.freeEndpoint, apiKey: '', model: m, timeoutMs: 30000 });
   }
   if (settings.byok.apiKey && (!list.length || settings.autoFallbackByok))
-    list.push({ channel: 'byok', label: `BYOK ${settings.byok.model}`, endpoint: settings.byok.baseUrl, apiKey: settings.byok.apiKey, model: settings.byok.model, timeoutMs: 45000 });
+    for (const m of byokModels(settings))
+      list.push({ channel: 'byok', label: `BYOK ${m}`, endpoint: settings.byok.baseUrl, apiKey: settings.byok.apiKey, model: m, timeoutMs: 45000 });
   return list;
 }
 
@@ -332,14 +343,16 @@ function channelFor(settings, which) {
   }
   if (which === 'free')
     return { channel: 'free', label: `免费通道 ${settings.freeModel}`, endpoint: settings.freeEndpoint, apiKey: '', model: settings.freeModel, timeoutMs: 30000 };
-  return settings.byok.apiKey
-    ? { channel: 'byok', label: `BYOK ${settings.byok.model}`, endpoint: settings.byok.baseUrl, apiKey: settings.byok.apiKey, model: settings.byok.model, timeoutMs: 45000 }
-    : null;
+  if (which === 'byok') {
+    const m = byokModels(settings)[0];
+    return settings.byok.apiKey && m
+      ? { channel: 'byok', label: `BYOK ${m}`, endpoint: settings.byok.baseUrl, apiKey: settings.byok.apiKey, model: m, timeoutMs: 45000 }
+      : null;
+  }
+  return null;
 }
 
-async function testProvider(settings, which) {
-  const ch = channelFor(settings, which);
-  if (!ch) return { ok: false, error: '该通道配置不完整（缺少端点 / 模型名 / API Key）' };
+async function testChannel(settings, ch) {
   const prompt = buildSystemPrompt(settings);
   const sample = 'Hello world, this is a connection test.';
   const started = Date.now();
@@ -350,6 +363,26 @@ async function testProvider(settings, which) {
   } catch (e) {
     return { ok: false, ms: Date.now() - started, model: ch.model, endpoint: ch.endpoint, error: errorMessage(e, ch.timeoutMs) };
   }
+}
+
+async function testProvider(settings, which) {
+  if (which === 'byok') {
+    if (!settings.byok.apiKey) return { ok: false, error: '缺少 API Key，请先填写并保存' };
+    const models = byokModels(settings);
+    if (!models.length) return { ok: false, error: '未选择任何模型：请在下拉框中勾选，或用输入框手动添加' };
+    let last = null;
+    for (const m of models) {
+      const ch = { channel: 'byok', label: `BYOK ${m}`, endpoint: settings.byok.baseUrl, apiKey: settings.byok.apiKey, model: m, timeoutMs: 45000 };
+      const r = await testChannel(settings, ch);
+      if (r.ok) return r;
+      last = r;
+      logWarn('provider', `BYOK 自检失败：${m}`, r.error ?? '');
+    }
+    return { ...last, error: `已测试 ${models.length} 个模型均失败；最后一个（${last?.model ?? ''}）：${last?.error ?? '未知错误'}` };
+  }
+  const ch = channelFor(settings, which);
+  if (!ch) return { ok: false, error: '该通道配置不完整（缺少端点 / 模型名 / API Key）' };
+  return testChannel(settings, ch);
 }
 
 async function listModels(baseUrl, apiKey) {
